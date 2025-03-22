@@ -5,6 +5,7 @@ output: html_document
 
 ## Load required libraries
 ```{r}
+rm(list=ls())
 library(dplyr)
 library(ggplot2)
 library(caret)
@@ -17,6 +18,7 @@ library(gbm)
 library(xgboost)
 library(cluster)
 library(factoextra)
+library(ROSE)
 ```
 
 ## Load and merge data
@@ -31,6 +33,7 @@ data <- status %>%
   left_join(location, by = "Customer.ID") %>%
   left_join(services, by = "Customer.ID")
 ```
+
 
 ## Select and clean variables
 ```{r}
@@ -50,17 +53,52 @@ data_model <- data %>%
 
 ```
 
+
 ## Exploratory Data Analysis
 ```{r}
-ggplot(data_model, aes(x = Churn)) + geom_bar(fill = "#FF6666") + labs(title = "Churn Distribution")
-ggplot(data_model, aes(x = Churn, y = Monthly.Charge, fill = Churn)) +
+churn_counts <- table(data_model$Churn)
+churn_counts_df <- as.data.frame(churn_counts)
+colnames(churn_counts_df) <- c("Churn", "count")
+churn_counts_df$percentage <- (churn_counts_df$count / sum(churn_counts_df$count)) * 100
+
+ggplot(churn_counts_df, aes(x = Churn, y = count)) + 
+  geom_bar(stat = "identity", fill = "#FF6666") +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), 
+            vjust = -0.5, size = 5) + 
+  labs(title = "Churn Distribution")
+
+
+ggplot(data_model, aes(x = Churn, y = Monthly.Charge, fill = Churn)) + 
   geom_boxplot() + labs(title = "Monthly Charge by Churn")
+
+
 ggplot(data_model, aes(x = Contract, fill = Churn)) +
   geom_bar(position = "fill") + scale_y_continuous(labels = scales::percent) +
   labs(title = "Churn Rate by Contract Type")
+
+
 num_vars <- data_model[, sapply(data_model, is.numeric)]
 corrplot(cor(num_vars), method = "color", type = "upper", tl.cex = 0.8)
 ```
+
+## Preprocessing - Convert to Factors
+```{r}
+str(data_model)
+
+convert_categorical <- function(data) {
+  for (col in names(data)) {
+    if (!is.numeric(data[[col]])) {
+      data[[col]] <- as.factor(data[[col]])
+    }
+  }
+  return(data)
+}
+
+
+data_model <- convert_categorical(data_model)
+str(data_model)
+```
+
 
 ## Train/test split and preprocessing
 ```{r}
@@ -82,6 +120,46 @@ nzv <- nearZeroVar(train, saveMetrics = TRUE)
 train <- train[, !nzv$zeroVar]
 test <- test[, names(train)]
 ```
+
+
+## Balancing Train Data
+```{r}
+table(train$Churn)
+table(train$Churn) / nrow(train) * 100 
+
+churn_counts <- table(data_model$Churn)
+churn_counts_df <- as.data.frame(churn_counts)
+colnames(churn_counts_df) <- c("Churn", "count")
+churn_counts_df$percentage <- (churn_counts_df$count / sum(churn_counts_df$count)) * 100
+
+###### Over-sample
+#train_balanced <- ovun.sample(Churn ~ ., data=train, method="over", p=0.5, seed = 123)$data
+#table(train_balanced$Churn) / nrow(train_balanced) * 100 
+
+##### Under-sample
+#train_balanced <- ovun.sample(Churn ~ ., data=train, method="under", N=sum(train$Churn == 1) * 2)$data
+#train_balanced <- ovun.sample(Churn ~ ., data=train, method="under", p=0.5, seed = 123)$data
+#table(train_balanced$Churn) / nrow(train_balanced) * 100 
+
+# Combination Sampling
+set.seed(123)
+train <- ovun.sample(Churn ~ ., data=train, method="both", p=0.5)$data
+table(train$Churn) / nrow(train) * 100 
+
+
+churn_counts <- table(train$Churn)
+churn_counts_df <- as.data.frame(churn_counts)
+colnames(churn_counts_df) <- c("Churn", "count")
+churn_counts_df$percentage <- (churn_counts_df$count / sum(churn_counts_df$count)) * 100
+
+ggplot(churn_counts_df, aes(x = Churn, y = count)) + 
+  geom_bar(stat = "identity", fill = c("#B39DDB", "#5E35B1")) +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), 
+            vjust = -0.5, size = 5) + 
+  labs(title = "Churn Distribution (After Balancing)")
+
+```
+
 
 ## Stepwise Logistic Regression
 ```{r}
