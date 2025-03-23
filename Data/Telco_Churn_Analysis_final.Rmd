@@ -107,7 +107,7 @@ step_model <- stepAIC(full_model, direction = "both", trace = FALSE)
 
 step_pred_prob <- predict(step_model, newdata = test, type = "response")
 step_pred <- ifelse(step_pred_prob > 0.5, "Yes", "No")
-
+step_formula=step_model$formula
 confusionMatrix(as.factor(step_pred), test$Churn)
 step_roc <- roc(test$Churn, step_pred_prob)
 plot(step_roc, main = "Stepwise Logistic ROC")
@@ -145,7 +145,6 @@ results <- data.frame(
 )
 print(results)
 ```
-
 
 ## Extended models: RF, GBM, XGBoost, Clustering
 
@@ -219,7 +218,6 @@ print(results_all)
 
 ```
 
-
 # Cross-Validation
 
 ```{r}
@@ -261,8 +259,12 @@ for (b in 1:B){
 
 
   ### Model 1: Stepwise
-  full_model <- glm(Churn ~ ., data = train, family = "binomial")
-  step_model <- stepAIC(full_model, direction = "both", trace = FALSE)
+  #The below code re-fits stepwise with every regression run. That is how we used to do it
+  #full_model <- glm(Churn ~ ., data = train, family = "binomial")
+  #step_model <- stepAIC(full_model, direction = "both", trace = FALSE)
+  
+  #This code uses the same selected variables every time.
+  step_model <- glm(step_formula, data = train, family = "binomial")
   step_pred_prob <- predict(step_model, newdata = test, type = "response")
   step_pred <- ifelse(step_pred_prob > 0.5, "Yes", "No")
 
@@ -363,7 +365,6 @@ print(mean_results)
 
 ```
 
-
 ```{r}
 # Summary statistics
 summary_stats <- data.frame(
@@ -409,4 +410,29 @@ print(summary_stats)
 
 ```
 
+## Statistical Tests
 
+```{r}
+#tests for normality
+normality<-c(shapiro.test(monte_df[,1])$p.value,
+shapiro.test(monte_df[,2])$p.value,
+shapiro.test(monte_df[,3])$p.value,
+shapiro.test(monte_df[,4])$p.value,
+shapiro.test(monte_df[,5])$p.value
+)
+
+min(normality)
+#All are close to normal, except Random Forest. Could replace with Wilcoxon-Signed Rank
+
+T1_roc=t.test(monte_df[,2],monte_df[,1],paired=T)
+T2_roc=t.test(monte_df[,2],monte_df[,3],paired=T)
+T3_roc=t.test(monte_df[,2],monte_df[,4],paired=T)
+T4_roc=t.test(monte_df[,2],monte_df[,5],paired=T)
+t_scores<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
+comp_names_roc<-c( "Vs LASSO","Vs Random Forest","Vs Naive GBM","Vs XGBoost")
+t_table_roc_df<-data.frame(
+  Model=comp_names_roc,
+  p_value_t_test_roc=t_scores
+)
+t_table_df
+```
