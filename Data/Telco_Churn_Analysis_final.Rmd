@@ -225,12 +225,14 @@ print(results_all)
 ```{r}
 
 set.seed(123)
-B=1
+B=100
 monte_df<-data.frame()
 
 
 for (b in 1:B){
-  print(paste("Iteration", b))
+  if (b %% 20 == 0) {
+    print(paste("Loop", b, "of", B))
+  }
   
   split <- createDataPartition(data_model$Churn, p = 0.8, list = FALSE)
   train <- data_model[split, ]
@@ -271,7 +273,7 @@ for (b in 1:B){
 
   ### Model 3: Random Forest
   rf_model <- randomForest(Churn ~ ., data = train, ntree = 100) 
-  rf_pred_prob <- predict(rf_model, newdata = test, type = "prob")[, "Yes"] # prob
+  rf_pred_prob <- predict(rf_model, newdata = test, type = "prob")[, "Yes"] 
   rf_pred <- predict(rf_model, newdata = test) 
   
   ### Model 4: GBM
@@ -303,7 +305,7 @@ for (b in 1:B){
 
   lasso_roc <- roc(y_test, as.vector(lasso_pred_prob))
   step_roc <- roc(y_test, as.vector(step_pred_prob))
-  rf_roc <- roc(y_test, as.vector(rf_pred_prob))  # added RF ROC calculation
+  rf_roc <- roc(y_test, as.vector(rf_pred_prob))  
   gbm_roc <- roc(y_test, as.vector(gbm_pred_prob))
   xgb_roc <- roc(y_test, as.vector(xgb_pred_prob))
 
@@ -311,7 +313,7 @@ for (b in 1:B){
   monte_df<-rbind(monte_df,c(
     lasso_roc$auc,
     step_roc$auc,
-    rf_roc$auc,  # added RF AUC
+    rf_roc$auc,  
     gbm_roc$auc,
     xgb_roc$auc,
     
@@ -331,7 +333,13 @@ for (b in 1:B){
     step_table$byClass['Recall'],
     gbm_table$byClass['Recall'],
     rf_table$byClass['Recall'],
-    xg_table$byClass['Recall']
+    xg_table$byClass['Recall'],
+    
+    lasso_table$byClass['Balanced Accuracy'],
+    step_table$byClass['Balanced Accuracy'],
+    rf_table$byClass['Balanced Accuracy'],
+    gbm_table$byClass['Balanced Accuracy'],
+    xg_table$byClass['Balanced Accuracy']
   ))
 }
 
@@ -340,7 +348,65 @@ colnames(monte_df)<-c(
   'LASSO ROC','Stepwise ROC', 'Random Forest ROC','GBM ROC','XGBoost ROC',
   'LASSO F1','Stepwise F1', 'Random Forest F1','GBM F1','XGBoost F1',
   'LASSO Precision','Stepwise Precision', 'Random Forest Precision','GBM Precision','XGBoost Precision',
-  'LASSO Recall','Stepwise Recall', 'Random Forest Recall','GBM Recall','XGBoost Recall'
+  'LASSO Recall','Stepwise Recall', 'Random Forest Recall','GBM Recall','XGBoost Recall',
+  'LASSO Balanced Accuracy','Stepwise Balanced Accuracy', 'Random Forest Balanced Accuracy', 'GBM Balanced Accuracy','XGBoost Balanced Accuracy'
 )
 
 ```
+
+## Summary Results
+
+```{r}
+# Mean Results
+mean_results <- apply(monte_df, 2, mean)
+print(mean_results)
+
+```
+
+
+```{r}
+# Summary statistics
+summary_stats <- data.frame(
+  Metric = c("AUC", "F1", "Precision", "Recall", 'Balanced Accuracy'),
+  LASSO = c(
+    mean(monte_df$`LASSO ROC`), 
+    mean(monte_df$`LASSO F1`), 
+    mean(monte_df$`LASSO Precision`), 
+    mean(monte_df$`LASSO Recall`),
+    mean(monte_df$`LASSO Balanced Accuracy`)
+  ),
+  Stepwise = c(
+    mean(monte_df$`Stepwise ROC`), 
+    mean(monte_df$`Stepwise F1`), 
+    mean(monte_df$`Stepwise Precision`), 
+    mean(monte_df$`Stepwise Recall`),
+    mean(monte_df$`Stepwise Balanced Accuracy`)
+  ),
+  RandomForest = c(
+    mean(monte_df$`Random Forest ROC`), 
+    mean(monte_df$`Random Forest F1`), 
+    mean(monte_df$`Random Forest Precision`), 
+    mean(monte_df$`Random Forest Recall`),
+    mean(monte_df$`Random Forest Balanced Accuracy`)
+  ),
+  GBM = c(
+    mean(monte_df$`GBM ROC`), 
+    mean(monte_df$`GBM F1`), 
+    mean(monte_df$`GBM Precision`), 
+    mean(monte_df$`GBM Recall`),
+    mean(monte_df$`GBM Balanced Accuracy`)
+  ),
+  XGBoost = c(
+    mean(monte_df$`XGBoost ROC`), 
+    mean(monte_df$`XGBoost F1`), 
+    mean(monte_df$`XGBoost Precision`), 
+    mean(monte_df$`XGBoost Recall`),
+    mean(monte_df$`XGBoost Balanced Accuracy`)
+  )
+)
+
+print(summary_stats)
+
+```
+
+
