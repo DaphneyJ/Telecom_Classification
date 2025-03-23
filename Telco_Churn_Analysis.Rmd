@@ -1,0 +1,334 @@
+---
+title: "Telco Customer Churn Analysis"
+output: html_document
+---
+
+## Load required libraries
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(glmnet)
+library(MASS)
+library(corrplot)
+library(pROC)
+library(randomForest)
+library(gbm)
+library(xgboost)
+library(cluster)
+library(factoextra)
+```
+
+## Load and merge data
+
+```{r}
+status <- read.csv("Telco_customer_churn_status.csv")
+demographics <- read.csv("Telco_customer_churn_demographics.csv")
+location <- read.csv("Telco_customer_churn_location.csv")
+services <- read.csv("Telco_customer_churn_services.csv")
+
+data <- status %>%
+  left_join(demographics, by = "Customer.ID") %>%
+  left_join(location, by = "Customer.ID") %>%
+  left_join(services, by = "Customer.ID")
+```
+
+## Select and clean variables
+
+```{r}
+selected_vars <- c("Churn.Label", "Gender", "Senior.Citizen", "Married", "Dependents", 
+                   "Number.of.Dependents", "Tenure.in.Months", "Contract", 
+                   "Phone.Service", "Multiple.Lines", "Internet.Service", 
+                   "Online.Security", "Online.Backup", "Device.Protection.Plan", 
+                   "Premium.Tech.Support", "Streaming.TV", "Streaming.Movies", 
+                   "Paperless.Billing", "Payment.Method", "Monthly.Charge", 
+                   "Total.Charges", "CLTV", "Satisfaction.Score")
+
+data_model <- data %>%
+  dplyr::select(all_of(selected_vars)) %>%
+  na.omit() %>%
+  mutate(Churn = as.factor(Churn.Label)) %>%
+  dplyr::select(-Churn.Label)
+
+```
+
+## Exploratory Data Analysis
+
+```{r}
+ggplot(data_model, aes(x = Churn)) + geom_bar(fill = "#FF6666") + labs(title = "Churn Distribution")
+ggplot(data_model, aes(x = Churn, y = Monthly.Charge, fill = Churn)) +
+  geom_boxplot() + labs(title = "Monthly Charge by Churn")
+ggplot(data_model, aes(x = Contract, fill = Churn)) +
+  geom_bar(position = "fill") + scale_y_continuous(labels = scales::percent) +
+  labs(title = "Churn Rate by Contract Type")
+num_vars <- data_model[, sapply(data_model, is.numeric)]
+corrplot(cor(num_vars), method = "color", type = "upper", tl.cex = 0.8)
+```
+
+## Train/test split and preprocessing
+
+```{r}
+set.seed(42)
+split <- createDataPartition(data_model$Churn, p = 0.8, list = FALSE)
+train <- data_model[split, ]
+test  <- data_model[-split, ]
+
+train <- train %>% mutate(across(where(is.character), as.factor))
+test  <- test %>% mutate(across(where(is.character), as.factor))
+
+valid_factors <- sapply(train, function(x) {
+  if (is.factor(x)) nlevels(x) > 1 else TRUE
+})
+train <- train[, valid_factors]
+test <- test[, names(train)]
+
+nzv <- nearZeroVar(train, saveMetrics = TRUE)
+train <- train[, !nzv$zeroVar]
+test <- test[, names(train)]
+```
+
+## Stepwise Logistic Regression
+
+```{r}
+full_model <- glm(Churn ~ ., data = train, family = "binomial")
+step_model <- stepAIC(full_model, direction = "both", trace = FALSE)
+step_pred_prob <- predict(step_model, newdata = test, type = "response")
+step_pred <- ifelse(step_pred_prob > 0.5, "Yes", "No")
+confusionMatrix(as.factor(step_pred), test$Churn)
+step_roc <- roc(test$Churn, step_pred_prob)
+plot(step_roc, main = "Stepwise Logistic ROC")
+auc(step_roc)
+```
+
+## LASSO Logistic Regression
+
+```{r}
+x_train <- model.matrix(Churn ~ ., data = train)[, -1]
+y_train <- ifelse(train$Churn == "Yes", 1, 0)
+x_test <- model.matrix(Churn ~ ., data = test)[, -1]
+y_test <- ifelse(test$Churn == "Yes", 1, 0)
+
+cv_lasso <- cv.glmnet(x_train, y_train, family = "binomial", alpha = 1)
+lasso_model <- glmnet(x_train, y_train, family = "binomial", lambda = cv_lasso$lambda.min)
+lasso_pred_prob <- predict(lasso_model, newx = x_test, type = "response")
+lasso_pred <- ifelse(lasso_pred_prob > 0.5, 1, 0)
+confusionMatrix(as.factor(lasso_pred), as.factor(y_test))
+lasso_roc <- roc(y_test, as.vector(lasso_pred_prob))
+plot(lasso_roc, main = "LASSO Logistic ROC")
+auc(lasso_roc)
+```
+
+## Model comparison table
+
+```{r}
+results <- data.frame(
+  Model = c("Stepwise Logistic", "LASSO Logistic"),
+  Accuracy = c(
+    sum(step_pred == test$Churn) / length(step_pred),
+    sum(lasso_pred == y_test) / length(lasso_pred)
+  ),
+  AUC = c(auc(step_roc), auc(lasso_roc))
+)
+print(results)
+```
+
+## Extended models: RF, GBM, XGBoost, Clustering
+
+```{r}
+rf_model <- randomForest(Churn ~ ., data = train, ntree = 100)
+rf_pred <- predict(rf_model, newdata = test)
+confusionMatrix(rf_pred, test$Churn)
+varImpPlot(rf_model)
+
+# Copy train and test sets with numeric target for gbm
+train_gbm <- train %>%
+  mutate(Churn = ifelse(Churn == "Yes", 1, 0))
+
+test_gbm <- test %>%
+  mutate(Churn = ifelse(Churn == "Yes", 1, 0))
+
+# Train GBM
+gbm_model <- gbm(Churn ~ ., data = train_gbm, distribution = "bernoulli",
+                 n.trees = 300, shrinkage = 0.01, interaction.depth = 3, cv.folds = 5)
+
+best_iter <- gbm.perf(gbm_model, method = "cv")
+
+# Predict and evaluate
+gbm_pred_prob <- predict(gbm_model, newdata = test_gbm, n.trees = best_iter, type = "response")
+gbm_pred <- ifelse(gbm_pred_prob > 0.5, 1, 0)
+confusionMatrix(as.factor(gbm_pred), as.factor(test_gbm$Churn))
+
+
+xgb_train <- xgb.DMatrix(data = x_train, label = y_train)
+xgb_test <- xgb.DMatrix(data = x_test, label = y_test)
+xgb_model <- xgboost(data = xgb_train, objective = "binary:logistic", nrounds = 100, verbose = 0)
+xgb_pred_prob <- predict(xgb_model, newdata = xgb_test)
+xgb_pred <- ifelse(xgb_pred_prob > 0.5, 1, 0)
+confusionMatrix(as.factor(xgb_pred), as.factor(y_test))
+
+numeric_scaled <- scale(data_model[, sapply(data_model, is.numeric)])
+fviz_nbclust(numeric_scaled, kmeans, method = "wss")
+km <- kmeans(numeric_scaled, centers = 3)
+fviz_cluster(km, data = numeric_scaled)
+```
+
+Model Comparison
+
+```{r}
+# Model comparison for Stepwise, LASSO, RF, GBM, XGBoost
+
+# Convert any needed factors for fairness
+rf_auc <- roc(test$Churn, as.numeric(rf_pred == "Yes"))
+gbm_auc <- roc(test_gbm$Churn, gbm_pred_prob)
+xgb_auc <- roc(y_test, xgb_pred_prob)
+
+results_all <- data.frame(
+  Model = c("Stepwise Logistic", "LASSO Logistic", "Random Forest", "GBM", "XGBoost"),
+  Accuracy = c(
+    mean(step_pred == test$Churn),
+    mean(lasso_pred == y_test),
+    mean(rf_pred == test$Churn),
+    mean(gbm_pred == test_gbm$Churn),
+    mean(xgb_pred == y_test)
+  ),
+  AUC = c(
+    auc(step_roc),
+    auc(lasso_roc),
+    auc(rf_auc),
+    auc(gbm_auc),
+    auc(xgb_auc)
+  )
+)
+
+print(results_all)
+
+```
+
+```{r}
+B=100
+
+
+monte_df<-data.frame()
+
+
+for (b in 1:B){
+  split <- createDataPartition(data_model$Churn, p = 0.8, list = FALSE)
+train <- data_model[split, ]
+test  <- data_model[-split, ]
+
+train <- train %>% mutate(across(where(is.character), as.factor))
+test  <- test %>% mutate(across(where(is.character), as.factor))
+
+valid_factors <- sapply(train, function(x) {
+  if (is.factor(x)) nlevels(x) > 1 else TRUE
+})
+train <- train[, valid_factors]
+test <- test[, names(train)]
+
+nzv <- nearZeroVar(train, saveMetrics = TRUE)
+train <- train[, !nzv$zeroVar]
+test <- test[, names(train)]
+
+
+
+  
+  
+  
+x_train <- model.matrix(Churn ~ ., data = train)[, -1]
+y_train <- ifelse(train$Churn == "Yes", 1, 0)
+x_test <- model.matrix(Churn ~ ., data = test)[, -1]
+y_test <- ifelse(test$Churn == "Yes", 1, 0)
+
+
+#Stepwise
+full_model <- glm(Churn ~ ., data = train, family = "binomial")
+step_model <- stepAIC(full_model, direction = "both", trace = FALSE)
+step_pred_prob <- predict(step_model, newdata = test, type = "response")
+step_pred <- ifelse(step_pred_prob > 0.5, "Yes", "No")
+
+#LASSO
+
+lasso_model <- glmnet(x_train, y_train, family = "binomial", lambda = cv_lasso$lambda.min)
+lasso_pred_prob <- predict(lasso_model, newx = x_test, type = "response")
+lasso_pred <- ifelse(lasso_pred_prob > 0.5, 1, 0)
+
+
+
+#Forest
+
+rf_model <- randomForest(Churn ~ ., data = train, ntree = 100)
+rf_pred <- predict(rf_model, newdata = test)
+#GBM
+train_gbm <- train %>%
+  mutate(Churn = ifelse(Churn == "Yes", 1, 0))
+
+test_gbm <- test %>%
+  mutate(Churn = ifelse(Churn == "Yes", 1, 0))
+
+gbm_model <- gbm(Churn ~ ., data = train_gbm, distribution = "bernoulli",
+                 n.trees = best_iter, shrinkage = 0.01, interaction.depth = 3)
+
+
+
+# Predict and evaluate
+gbm_pred_prob <- predict(gbm_model, newdata = test_gbm, n.trees = best_iter, type = "response")
+gbm_pred <- ifelse(gbm_pred_prob > 0.5, 1, 0)
+
+#XGBoost
+
+xgb_train <- xgb.DMatrix(data = x_train, label = y_train)
+xgb_test <- xgb.DMatrix(data = x_test, label = y_test)
+xgb_model <- xgboost(data = xgb_train, objective = "binary:logistic", nrounds = 100, verbose = 0)
+xgb_pred_prob <- predict(xgb_model, newdata = xgb_test)
+xgb_pred <- ifelse(xgb_pred_prob > 0.5, 1, 0)
+
+
+step_table<-confusionMatrix(as.factor(step_pred), test$Churn)
+lasso_table<-confusionMatrix(as.factor(lasso_pred), as.factor(y_test))
+rf_table<-confusionMatrix(as.factor(rf_pred), test$Churn)
+gbm_table<-confusionMatrix(as.factor(gbm_pred), as.factor(test_gbm$Churn))
+xg_table<-confusionMatrix(as.factor(xgb_pred), as.factor(y_test))
+
+lasso_roc <- roc(y_test, as.vector(lasso_pred_prob))
+step_roc <- roc(y_test, as.vector(step_pred_prob))
+gbm_roc <- roc(y_test, as.vector(gbm_pred_prob))
+xgb_roc <- roc(y_test, as.vector(xgb_pred_prob))
+
+
+
+
+
+monte_df<-rbind(monte_df,c(
+  lasso_roc$auc,
+  step_roc$auc,
+  gbm_roc$auc,
+  xgb_roc$auc,
+  lasso_table$byClass['F1'],
+step_table$byClass['F1'],
+gbm_table$byClass['F1'],
+rf_table$byClass['F1'],
+xg_table$byClass['F1'],
+lasso_table$byClass['Precision'],
+step_table$byClass['Precision'],
+gbm_table$byClass['Precision'],
+rf_table$byClass['Precision'],
+xg_table$byClass['Precision'],
+lasso_table$byClass['Recall'],
+step_table$byClass['Recall'],
+gbm_table$byClass['Recall'],
+rf_table$byClass['Recall'],
+xg_table$byClass['Recall']
+))
+
+
+
+
+
+}
+colnames(monte_df)<-c('LASSO ROC','Stepwise ROC','GBM ROC','XGBoost ROC',
+                      'LASSO F1','Stepwise ROC', 'Random Forest F1','GBM F1','XGBoost F1',
+'LASSO Precision','Stepwise Precision', 'Random Forest Precision','GBM Precision','XGBoost Precision',
+'LASSO Recall','Stepwise Recall', 'Random Forest Recall','GBM Recall','XGBoost Recall'
+)
+```
