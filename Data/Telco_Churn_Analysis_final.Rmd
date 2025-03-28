@@ -18,6 +18,8 @@ library(gbm)
 library(xgboost)
 library(cluster)
 library(factoextra)
+library(reshape2)
+library(tidyr)
 ```
 
 ## Load and merge data
@@ -77,6 +79,107 @@ num_vars <- data_model[, sapply(data_model, is.numeric)]
 corrplot(cor(num_vars), method = "color", type = "upper", tl.cex = 0.8)
 ```
 
+```{r}
+total_lost<-sum(data['Churn.Value']*data['CLTV'])
+cat("Lifetime value of churned customers: $",toString(round(total_lost,2)))
+average_monthly_spend<-data['CLTV']/data['Tenure.in.Months']
+average_monthly_churn<-sum(average_monthly_spend*data['Churn.Value'])
+print("Revenue lost per month from a lost customer = Lifetime value / Tenure in Months")
+cat(" Revenue lost per month from churned customers: $",toString(round(average_monthly_churn,2)))
+```
+
+```{r}
+
+
+#If we want to limit this, we can remove columns from here
+selected_columns<-data[,c("Satisfaction.Score",
+"Churn.Value",
+"CLTV",
+"Churn.Category",
+"Churn.Reason",
+"Gender",
+"Age",
+"Under.30",
+"Senior.Citizen",
+"Married",
+"Dependents",
+"Number.of.Dependents",
+"Latitude",
+"Longitude",
+"Referred.a.Friend",
+"Number.of.Referrals",
+"Tenure.in.Months",
+"Offer",
+"Phone.Service",
+"Avg.Monthly.Long.Distance.Charges",
+"Multiple.Lines",
+"Internet.Service",
+"Internet.Type",
+"Avg.Monthly.GB.Download",
+"Online.Security",
+"Online.Backup",
+"Device.Protection.Plan",
+"Premium.Tech.Support",
+"Streaming.TV",
+"Streaming.Movies",
+"Streaming.Music",
+"Unlimited.Data",
+"Contract",
+"Paperless.Billing",
+"Payment.Method",
+"Monthly.Charge",
+"Total.Charges",
+"Total.Refunds",
+"Total.Extra.Data.Charges",
+"Total.Long.Distance.Charges",
+"Total.Revenue"
+)]
+one_hot_matrix<-model.matrix(~.-1,selected_columns)
+
+melted_cormat <- melt(round(cor(one_hot_matrix),2), na.rm = TRUE)
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "orange", high = "purple", mid = "white", 
+   name="Correlation (rounded)") +
+ theme(axis.text.x = element_text(angle = 90),axis.text.y = element_text())+
+ coord_fixed()+
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = .5) +
+  ggtitle("Correlation between variables")
+ggsave('Project_all_big_cor.jpg', scale=3)
+
+
+```
+
+```{r}
+
+  without_churn <-subset(one_hot_matrix, select = -c(2) ) 
+  churn_value<-one_hot_matrix[,2]
+  # Melt the data
+  melted_viz <- melt(
+    without_churn, 
+    variable.name = "category",  # Name for the variable column
+    value.name = "value"         # Name for the value column
+  )
+  
+  # Filter for one-hot encoded variables (where value is 1)
+  
+  # Add back the churn column
+  melted_viz$churn <- churn_value[rep(seq_len(nrow(data)), ncol(without_churn))]
+  
+  # Select and reorder columns
+  
+```
+
+```{r}
+ggplot(melted_viz, aes(x=value,group=as.factor(churn),fill=as.factor(churn))) + 
+    geom_histogram(adjust=1.5)  + 
+    facet_wrap(~Var2,scales = "free") +
+  ggtitle("Density of Values by churn status (1 = Churned)")+
+labs(fill='Churn (1 = churned)') 
+ggsave('Churn_variable_histogram.jpg', scale=3)
+
+```
+
 ## Train/test split and preprocessing
 
 ```{r}
@@ -97,6 +200,7 @@ test <- test[, names(train)]
 nzv <- nearZeroVar(train, saveMetrics = TRUE)
 train <- train[, !nzv$zeroVar]
 test <- test[, names(train)]
+#model.matrix(~.-1,selected_columns[,c(3,4,5,6,7,8,9,10,11,12,14,15,16)])
 ```
 
 ## Stepwise Logistic Regression
@@ -180,10 +284,34 @@ xgb_pred_prob <- predict(xgb_model, newdata = xgb_test)
 xgb_pred <- ifelse(xgb_pred_prob > 0.5, 1, 0)
 confusionMatrix(as.factor(xgb_pred), as.factor(y_test))
 
-numeric_scaled <- scale(data_model[, sapply(data_model, is.numeric)])
+#numeric_scaled <- scale(data_model[, sapply(data_model, is.numeric)])
+
+numeric_scaled<-scale(one_hot_matrix)
 fviz_nbclust(numeric_scaled, kmeans, method = "wss")
 km <- kmeans(numeric_scaled, centers = 3)
 fviz_cluster(km, data = numeric_scaled)
+```
+
+```{r}
+ggplot(melt(km$centers), aes(x=Var1, y=value)) + 
+  geom_bar(stat = "identity") +
+facet_wrap(~Var2,scale="free") +
+  ggtitle("Average score by variable, by cluster (scaled)")
+
+ggsave('cluster_avgs.jpg', scale=3)
+one_hot_matrix_clustered<-one_hot_matrix
+one_hot_matrix_clustered<-cbind(one_hot_matrix_clustered,km$cluster)
+
+
+ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(x=value,group=as.factor(V74),fill=as.factor(V74))) + 
+    geom_histogram(adjust=1.5,alpha=.5)  + 
+    facet_wrap(~name,scales = "free")+
+  labs(fill='Cluster')  +
+  ggtitle("Histogram by variable, by cluster (original values)")
+ggsave('cluster_histograms.jpg', scale=3)
+
+
+
 ```
 
 ## Model Comparison
@@ -216,6 +344,10 @@ results_all <- data.frame(
 
 print(results_all)
 
+```
+
+```{r}
+#Variable importance??
 ```
 
 # Cross-Validation
@@ -407,7 +539,11 @@ summary_stats <- data.frame(
 )
 
 print(summary_stats)
-
+ggplot(data=melt(monte_df[,1:5]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+  ggtitle("ROC, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
 ```
 
 ## Statistical Tests
@@ -434,5 +570,12 @@ t_table_roc_df<-data.frame(
   Model=comp_names_roc,
   p_value_t_test_roc=t_scores
 )
-t_table_df
+t_table_roc_df
+
+#Looking at our selected variables:
+#Referrals did not help our model
+#Charge/total charge/LTV did matter
+#Paperless billing, online backup, online securirty did matter
+#Geography did not matter
+#Contract terms did matter
 ```
