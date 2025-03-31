@@ -20,6 +20,7 @@ library(cluster)
 library(factoextra)
 library(reshape2)
 library(tidyr)
+library(ggbeeswarm)
 ```
 
 ## Load and merge data
@@ -84,8 +85,8 @@ total_lost<-sum(data['Churn.Value']*data['CLTV'])
 cat("Lifetime value of churned customers: $",toString(round(total_lost,2)))
 average_monthly_spend<-data['CLTV']/data['Tenure.in.Months']
 average_monthly_churn<-sum(average_monthly_spend*data['Churn.Value'])
-print("Revenue lost per month from a lost customer = Lifetime value / Tenure in Months")
-cat(" Revenue lost per month from churned customers: $",toString(round(average_monthly_churn,2)))
+print("Monthly from a lost customer = Lifetime value / Tenure in Months")
+cat(" Profit lost per month from churned customers: $",toString(round(average_monthly_churn,2)))
 ```
 
 ```{r}
@@ -139,7 +140,7 @@ one_hot_matrix<-model.matrix(~.-1,selected_columns)
 melted_cormat <- melt(round(cor(one_hot_matrix),2), na.rm = TRUE)
 ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
  geom_tile(color = "white")+
- scale_fill_gradient2(low = "orange", high = "purple", mid = "white", 
+ scale_fill_gradient2(low = "#F8766D", high = "#00BFC4", mid = "white", 
    name="Correlation (rounded)") +
  theme(axis.text.x = element_text(angle = 90),axis.text.y = element_text())+
  coord_fixed()+
@@ -293,24 +294,50 @@ fviz_cluster(km, data = numeric_scaled)
 ```
 
 ```{r}
-ggplot(melt(km$centers), aes(x=Var1, y=value)) + 
-  geom_bar(stat = "identity") +
-facet_wrap(~Var2,scale="free") +
-  ggtitle("Average score by variable, by cluster (scaled)")
 
-ggsave('cluster_avgs.jpg', scale=3)
+
+
+
+unscaled_centers <- (km$centers * sapply(data.frame(one_hot_matrix), sd,2)) + colMeans(one_hot_matrix) 
+#ggplot(melt(unscaled_centers), aes(x=as.factor(Var1), y=value)) + 
+#  geom_point(stat = "identity") +
+#facet_wrap(~Var2,scale="free") +
+#  ggtitle("Average score by variable, by cluster ")
+#unscaled_centers
+#ggsave('cluster_avgs.jpg', scale=3)
 one_hot_matrix_clustered<-one_hot_matrix
 one_hot_matrix_clustered<-cbind(one_hot_matrix_clustered,km$cluster)
 
 
-ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(x=value,group=as.factor(V74),fill=as.factor(V74))) + 
-    geom_histogram(adjust=1.5,alpha=.5)  + 
-    facet_wrap(~name,scales = "free")+
-  labs(fill='Cluster')  +
-  ggtitle("Histogram by variable, by cluster (original values)")
-ggsave('cluster_histograms.jpg', scale=3)
+#ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(x=value,group=as.factor(V74),fill=as.factor(V74))) + 
+ #   geom_histogram(adjust=1.5,alpha=.5)  + 
+  ##  facet_wrap(~name,scales = "free")+
+  #labs(fill='Cluster')  +
+ # ggtitle("Histogram by variable, by cluster (original values)")
+#ggsave('cluster_histograms.jpg', scale=3)
 
 
+
+ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(y=value,x=as.factor(V74))) + 
+   geom_jitter(size=0.001, alpha=0.2) +
+  aes(color=as.factor(V74)) +
+  facet_wrap(~name,scales = "free")+
+  labs(color='Cluster') +
+  ggtitle("Variables values by cluster (scatter plot)")
+
+  ggsave('cluster_jitter.jpg', scale=3)
+
+```
+
+```{r}
+
+ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(y=value,x=as.factor(V74))) + 
+   geom_boxplot(weight=0.1,fill=NA) +
+  aes(color=as.factor(V74)) +
+  facet_wrap(~name,scales = "free")+
+  labs(color='Cluster')  +
+  ggtitle("Variables values by cluster (box plot)")
+  ggsave('cluster_boxplot.jpg', scale=3)
 
 ```
 
@@ -539,38 +566,122 @@ summary_stats <- data.frame(
 )
 
 print(summary_stats)
-ggplot(data=melt(monte_df[,1:5]),
+
+```
+
+```{r}
+roc_plot<-ggplot(data=melt(monte_df[,1:5]),
 aes(x=value, group=variable, fill=variable)) +
     geom_density(adjust=1.5,alpha=.5) +
   ggtitle("ROC, across 100 Monte Carlo Runs") +
 labs(fill='Model') 
+F1_plot<-ggplot(data=melt(monte_df[,6:10]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+  ggtitle("F1, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+prec_plot<-ggplot(data=melt(monte_df[,11:15]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+  ggtitle("Precision, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+recall_plot<-ggplot(data=melt(monte_df[,16:20]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+ggtitle("Recall, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+acc_plot<-ggplot(data=melt(monte_df[,21:25]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+ggtitle("Blanced Accuracy, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+
+
+
+library(gridExtra)
+monte_density<-arrangeGrob(roc_plot, F1_plot,prec_plot, recall_plot,acc_plot,nrow = 3)
+ggsave("Monte_density.jpg",monte_density,scale=2)
+
 ```
 
 ## Statistical Tests
 
 ```{r}
-#tests for normality
-normality<-c(shapiro.test(monte_df[,1])$p.value,
-shapiro.test(monte_df[,2])$p.value,
-shapiro.test(monte_df[,3])$p.value,
-shapiro.test(monte_df[,4])$p.value,
-shapiro.test(monte_df[,5])$p.value
-)
+ get_p_value <- function(input){
+      as.numeric(unlist(input)[2])
 
-min(normality)
+ }
+ shapiro_tests<-apply(monte_df,2,shapiro.test)
+#tests for normality
+#normality<-c(shapiro.test(monte_df[,1])$p.value,
+normality<-data.frame(lapply(shapiro_tests,get_p_value))
+#Random Forest Recall and ROC are the only ones that fail normalcy by a lot, GBM precision, LASSO Recall, and XGBoost ROC are on the borderline, but we can still probably use them. Random Forest is so good on the recall and so bad on the ROC it's probably relative, and we have a good run
+#Random forest 
+
+
+
+normality[normality < .05]
 #All are close to normal, except Random Forest. Could replace with Wilcoxon-Signed Rank
 
 T1_roc=t.test(monte_df[,2],monte_df[,1],paired=T)
 T2_roc=t.test(monte_df[,2],monte_df[,3],paired=T)
 T3_roc=t.test(monte_df[,2],monte_df[,4],paired=T)
 T4_roc=t.test(monte_df[,2],monte_df[,5],paired=T)
-t_scores<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
-comp_names_roc<-c( "Vs LASSO","Vs Random Forest","Vs Naive GBM","Vs XGBoost")
-t_table_roc_df<-data.frame(
-  Model=comp_names_roc,
-  p_value_t_test_roc=t_scores
+t_scores_roc<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
+
+
+T1_balance=t.test(monte_df[,22],monte_df[,21],paired=T)
+T2_balance=t.test(monte_df[,22],monte_df[,23],paired=T)
+T3_balance=t.test(monte_df[,22],monte_df[,24],paired=T)
+T4_balance=t.test(monte_df[,22],monte_df[,25],paired=T)
+T1_precision=t.test(monte_df[,12],monte_df[,11],paired=T)
+T2_precision=t.test(monte_df[,12],monte_df[,13],paired=T)
+T3_precision=t.test(monte_df[,12],monte_df[,14],paired=T)
+T4_precision=t.test(monte_df[,12],monte_df[,15],paired=T)
+t_scores_balance<-c(T1_balance$p.value,T2_balance$p.value,T3_balance$p.value,T4_balance$p.value)
+t_scores_precision<-c(T1_precision$p.value,T2_precision$p.value,T3_precision$p.value,T4_precision$p.value)
+
+T1_F1=t.test(monte_df[,9],monte_df[,6],paired=T)
+T2_F1=t.test(monte_df[,9],monte_df[,7],paired=T)
+T3_F1=t.test(monte_df[,9],monte_df[,8],paired=T)
+T4_F1=t.test(monte_df[,9],monte_df[,10],paired=T)
+t_scores_F1<-c(T1_F1$p.value,T2_F1$p.value,T3_F1$p.value,T4_F1$p.value)
+
+T1_recall=t.test(monte_df[,18],monte_df[,16],paired=T)
+T2_recall=t.test(monte_df[,18],monte_df[,17],paired=T)
+T3_recall=t.test(monte_df[,18],monte_df[,19],paired=T)
+T4_recall=t.test(monte_df[,18],monte_df[,20],paired=T)
+t_scores_recall<-c(T1_recall$p.value,T2_recall$p.value,T3_recall$p.value,T4_recall$p.value)
+#t_scores_step<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
+comp_names_step<-c( "Stepwise = LASSO?","Stepwise = Random Forest?","Stepwise = Naive GBM?"," Stepwise = XGBoost?")
+t_table_stepwise<-data.frame(
+  Hypothesis=comp_names_step,
+  p_value_roc=t_scores_roc,
+  p_value_precision=t_scores_precision,
+  p_value_balanced_accuracy=t_scores_balance
 )
-t_table_roc_df
+comp_names_gbm<-c( "Naive GBM = LASSO?","Naive GBM = Stepwise?","Naive GBM = Random Forest?"," Naive GBM = XGBoost?")
+comp_names_rf<-c( "Random Forest = LASSO?","Random Forest = Stepwise?","Random Forest = Naive GBM?"," Random Forest = XGBoost?")
+
+t_table_GBM<-data.frame(
+  Hypothesis=comp_names_gbm,
+  p_value_f1=t_scores_F1
+)
+t_table_rf<-data.frame(
+  Hypothesis=comp_names_rf,
+  p_value_recall=t_scores_recall
+)
+t_table_stepwise
+t_table_GBM
+print(t_table_rf)
+#Best:
+
+#Recall: Random Forest
+#Precision: Stepwise
+#F1: GBM
+#ROC: Stepwise
+#Balanced Accuracy: Stepwise
+
 
 #Looking at our selected variables:
 #Referrals did not help our model
