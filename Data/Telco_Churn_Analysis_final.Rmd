@@ -415,7 +415,7 @@ fviz_cluster(final_km, data = numeric_scaled)
 
 ```{r}
 
-
+km<-final_km
 
 
 unscaled_centers <- (km$centers * sapply(data.frame(one_hot_matrix), sd,2)) + colMeans(one_hot_matrix) 
@@ -468,7 +468,7 @@ ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(y=value,x
 
 # Convert any needed factors for fairness
 rf_auc <- roc(test$Churn, as.numeric(rf_pred == "Yes"))
-gbm_auc <- roc(test_gbm$Churn, gbm_pred_prob)
+gbm_auc <- roc(as.numeric(test_gbm$Churn), gbm_pred_prob[,1])
 xgb_auc <- roc(y_test, xgb_pred_prob)
 
 results_all <- data.frame(
@@ -497,6 +497,22 @@ print(results_all)
 #Variable importance??
 ```
 
+```{r}
+xg_param<-as.list(xgb_model$bestTune)
+ xg_rounds=xgb_model$bestTune$nrounds
+#  xg_depth=xgb_model$bestTune$max_depth
+#  xg_gamma=xgb_model$bestTune$gamma
+ # xg_eta=xgb_model$bestTune$eta
+  #xg_sample=xgb_model$bestTune$colsample_bytree
+  #xg_weight=xgb_model$bestTune$min_child_weight
+  #xg_sub=xgb_model$bestTune$subsample
+rf_try=rf_tuned$finalModel$tuneValue$mtry
+gbm_ntrees=gbm_model$bestTune$n.trees
+gb_depth=gbm_model$bestTune$interaction.depth
+gbm_shrinkage=gbm_model$bestTune$shrinkage
+gbm_obs=gbm_model$bestTune$n.minobsinnode
+```
+
 # Cross-Validation
 
 ```{r}
@@ -504,7 +520,6 @@ print(results_all)
 set.seed(123)
 B=100
 monte_df<-data.frame()
-
 
 for (b in 1:B){
   if (b %% 20 == 0) {
@@ -553,9 +568,9 @@ for (b in 1:B){
   lasso_pred <- ifelse(lasso_pred_prob > 0.5, 1, 0)
 
   ### Model 3: Random Forest
-  rf_model <- randomForest(Churn ~ ., data = train, ntree = 100) 
-  rf_pred_prob <- predict(rf_model, newdata = test, type = "prob")[, "Yes"] 
-  rf_pred <- predict(rf_model, newdata = test) 
+  rf_model_cv <- randomForest(Churn ~ ., data = train, ntree = 100,mtry=rf_try) 
+  rf_pred_prob <- predict(rf_model_cv, newdata = test, type = "prob")[, "Yes"] 
+  rf_pred <- predict(rf_model_cv, newdata = test) 
   
   ### Model 4: GBM
   train_gbm <- train %>%
@@ -563,18 +578,19 @@ for (b in 1:B){
   test_gbm <- test %>%
     mutate(Churn = ifelse(Churn == "Yes", 1, 0))
 
-  gbm_model <- gbm(Churn ~ ., data = train_gbm, distribution = "bernoulli",
-                 n.trees = best_iter, shrinkage = 0.01, interaction.depth = 3)
+  gbm_model_cv <- gbm(Churn ~ ., data = train_gbm, distribution = "bernoulli",
+                 n.trees = gbm_ntrees, shrinkage = gbm_shrinkage, interaction.depth = gb_depth,n.minobsinnode=gbm_obs)
 
-  gbm_pred_prob <- predict(gbm_model, newdata = test_gbm, n.trees = best_iter, type = "response")
+  gbm_pred_prob <- predict(gbm_model_cv, newdata = test_gbm, n.trees = gbm_ntrees, type = "response")
   gbm_pred <- ifelse(gbm_pred_prob > 0.5, 1, 0)
 
+ 
   
   ### Model 5: XGBoost
   xgb_train <- xgb.DMatrix(data = x_train, label = y_train)
   xgb_test <- xgb.DMatrix(data = x_test, label = y_test)
-  xgb_model <- xgboost(data = xgb_train, objective = "binary:logistic", nrounds = 100, verbose = 0)
-  xgb_pred_prob <- predict(xgb_model, newdata = xgb_test)
+  xgb_model_cv <- xgboost(data = xgb_train, params=xg_param, objective = "binary:logistic", nrounds = xg_rounds, verbose = 0)
+  xgb_pred_prob <- predict(xgb_model_cv, newdata = xgb_test)
   xgb_pred <- ifelse(xgb_pred_prob > 0.5, 1, 0)
 
   ### Metrics
@@ -721,7 +737,7 @@ labs(fill='Model')
 library(gridExtra)
 monte_density<-arrangeGrob(roc_plot, F1_plot,prec_plot, recall_plot,acc_plot,nrow = 3)
 ggsave("Monte_density.jpg",monte_density,scale=2)
-
+colMeans(monte_df)
 ```
 
 ## Statistical Tests
@@ -735,7 +751,9 @@ ggsave("Monte_density.jpg",monte_density,scale=2)
 #tests for normality
 #normality<-c(shapiro.test(monte_df[,1])$p.value,
 normality<-data.frame(lapply(shapiro_tests,get_p_value))
-#Random Forest Recall and ROC are the only ones that fail normalcy by a lot, GBM precision, LASSO Recall, and XGBoost ROC are on the borderline, but we can still probably use them. Random Forest is so good on the recall and so bad on the ROC it's probably relative, and we have a good run
+#Random Forest ROC, LASSO recall fail by a lot, stepwise recalle, random forest recall, and GBM recall are the ones that aren't normal, all but Random Forest ROC and LASSO Recall are close
+
+
 #Random forest 
 
 
@@ -743,10 +761,10 @@ normality<-data.frame(lapply(shapiro_tests,get_p_value))
 normality[normality < .05]
 #All are close to normal, except Random Forest. Could replace with Wilcoxon-Signed Rank
 
-T1_roc=t.test(monte_df[,2],monte_df[,1],paired=T)
-T2_roc=t.test(monte_df[,2],monte_df[,3],paired=T)
-T3_roc=t.test(monte_df[,2],monte_df[,4],paired=T)
-T4_roc=t.test(monte_df[,2],monte_df[,5],paired=T)
+T1_roc=t.test(monte_df[,5],monte_df[,1],paired=T)
+T2_roc=t.test(monte_df[,5],monte_df[,2],paired=T)
+T3_roc=t.test(monte_df[,5],monte_df[,3],paired=T)
+T4_roc=t.test(monte_df[,5],monte_df[,4],paired=T)
 t_scores_roc<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
 
 
@@ -767,33 +785,33 @@ T3_F1=t.test(monte_df[,9],monte_df[,8],paired=T)
 T4_F1=t.test(monte_df[,9],monte_df[,10],paired=T)
 t_scores_F1<-c(T1_F1$p.value,T2_F1$p.value,T3_F1$p.value,T4_F1$p.value)
 
-T1_recall=t.test(monte_df[,18],monte_df[,16],paired=T)
-T2_recall=t.test(monte_df[,18],monte_df[,17],paired=T)
-T3_recall=t.test(monte_df[,18],monte_df[,19],paired=T)
-T4_recall=t.test(monte_df[,18],monte_df[,20],paired=T)
+T1_recall=t.test(monte_df[,19],monte_df[,16],paired=T)
+T2_recall=t.test(monte_df[,19],monte_df[,17],paired=T)
+T3_recall=t.test(monte_df[,19],monte_df[,18],paired=T)
+T4_recall=t.test(monte_df[,19],monte_df[,20],paired=T)
 t_scores_recall<-c(T1_recall$p.value,T2_recall$p.value,T3_recall$p.value,T4_recall$p.value)
 #t_scores_step<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
 comp_names_step<-c( "Stepwise = LASSO?","Stepwise = Random Forest?","Stepwise = Naive GBM?"," Stepwise = XGBoost?")
 t_table_stepwise<-data.frame(
   Hypothesis=comp_names_step,
-  p_value_roc=t_scores_roc,
   p_value_precision=t_scores_precision,
   p_value_balanced_accuracy=t_scores_balance
 )
 comp_names_gbm<-c( "Naive GBM = LASSO?","Naive GBM = Stepwise?","Naive GBM = Random Forest?"," Naive GBM = XGBoost?")
-comp_names_rf<-c( "Random Forest = LASSO?","Random Forest = Stepwise?","Random Forest = Naive GBM?"," Random Forest = XGBoost?")
+comp_names_xg<-c( "XGBoost = LASSO?","XGBoost = Stepwise?","XGBoost = Random Forest?" ,"XGBoost = Naive GBM?")
 
 t_table_GBM<-data.frame(
   Hypothesis=comp_names_gbm,
-  p_value_f1=t_scores_F1
-)
-t_table_rf<-data.frame(
-  Hypothesis=comp_names_rf,
+  p_value_f1=t_scores_F1,
   p_value_recall=t_scores_recall
+)
+t_table_xg<-data.frame(
+  Hypothesis=comp_names_xg,
+  p_value_ROC=t_scores_roc
 )
 t_table_stepwise
 t_table_GBM
-print(t_table_rf)
+print(t_table_xg)
 #Best:
 
 #Recall: Random Forest
