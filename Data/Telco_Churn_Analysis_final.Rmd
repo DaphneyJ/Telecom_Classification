@@ -18,6 +18,11 @@ library(gbm)
 library(xgboost)
 library(cluster)
 library(factoextra)
+library(reshape2)
+library(tidyr)
+library(ggbeeswarm)
+library(caret)
+library(factoextra)
 ```
 
 ## Load and merge data
@@ -77,6 +82,107 @@ num_vars <- data_model[, sapply(data_model, is.numeric)]
 corrplot(cor(num_vars), method = "color", type = "upper", tl.cex = 0.8)
 ```
 
+```{r}
+total_lost<-sum(data['Churn.Value']*data['CLTV'])
+cat("Lifetime value of churned customers: $",toString(round(total_lost,2)))
+average_monthly_spend<-data['CLTV']/data['Tenure.in.Months']
+average_monthly_churn<-sum(average_monthly_spend*data['Churn.Value'])
+print("Monthly from a lost customer = Lifetime value / Tenure in Months")
+cat(" Profit lost per month from churned customers: $",toString(round(average_monthly_churn,2)))
+```
+
+```{r}
+
+
+#If we want to limit this, we can remove columns from here
+selected_columns<-data[,c("Satisfaction.Score",
+"Churn.Value",
+"CLTV",
+"Churn.Category",
+"Churn.Reason",
+"Gender",
+"Age",
+"Under.30",
+"Senior.Citizen",
+"Married",
+"Dependents",
+"Number.of.Dependents",
+"Latitude",
+"Longitude",
+"Referred.a.Friend",
+"Number.of.Referrals",
+"Tenure.in.Months",
+"Offer",
+"Phone.Service",
+"Avg.Monthly.Long.Distance.Charges",
+"Multiple.Lines",
+"Internet.Service",
+"Internet.Type",
+"Avg.Monthly.GB.Download",
+"Online.Security",
+"Online.Backup",
+"Device.Protection.Plan",
+"Premium.Tech.Support",
+"Streaming.TV",
+"Streaming.Movies",
+"Streaming.Music",
+"Unlimited.Data",
+"Contract",
+"Paperless.Billing",
+"Payment.Method",
+"Monthly.Charge",
+"Total.Charges",
+"Total.Refunds",
+"Total.Extra.Data.Charges",
+"Total.Long.Distance.Charges",
+"Total.Revenue"
+)]
+one_hot_matrix<-model.matrix(~.-1,selected_columns)
+
+melted_cormat <- melt(round(cor(one_hot_matrix),2), na.rm = TRUE)
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "#F8766D", high = "#00BFC4", mid = "white", 
+   name="Correlation (rounded)") +
+ theme(axis.text.x = element_text(angle = 90),axis.text.y = element_text())+
+ coord_fixed()+
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = .5) +
+  ggtitle("Correlation between variables")
+ggsave('Project_all_big_cor.jpg', scale=3)
+
+
+```
+
+```{r}
+
+  without_churn <-subset(one_hot_matrix, select = -c(2) ) 
+  churn_value<-one_hot_matrix[,2]
+  # Melt the data
+  melted_viz <- melt(
+    without_churn, 
+    variable.name = "category",  # Name for the variable column
+    value.name = "value"         # Name for the value column
+  )
+  
+  # Filter for one-hot encoded variables (where value is 1)
+  
+  # Add back the churn column
+  melted_viz$churn <- churn_value[rep(seq_len(nrow(data)), ncol(without_churn))]
+  
+  # Select and reorder columns
+  
+```
+
+```{r}
+ggplot(melted_viz, aes(x=value,group=as.factor(churn),fill=as.factor(churn))) + 
+    geom_histogram(adjust=1.5)  + 
+    facet_wrap(~Var2,scales = "free") +
+  ggtitle("Density of Values by churn status (1 = Churned)")+
+labs(fill='Churn (1 = churned)') 
+ggsave('Churn_variable_histogram.jpg', scale=3)
+
+```
+
 ## Train/test split and preprocessing
 
 ```{r}
@@ -97,6 +203,7 @@ test <- test[, names(train)]
 nzv <- nearZeroVar(train, saveMetrics = TRUE)
 train <- train[, !nzv$zeroVar]
 test <- test[, names(train)]
+#model.matrix(~.-1,selected_columns[,c(3,4,5,6,7,8,9,10,11,12,14,15,16)])
 ```
 
 ## Stepwise Logistic Regression
@@ -112,6 +219,9 @@ confusionMatrix(as.factor(step_pred), test$Churn)
 step_roc <- roc(test$Churn, step_pred_prob)
 plot(step_roc, main = "Stepwise Logistic ROC")
 auc(step_roc)
+
+
+
 ```
 
 ## LASSO Logistic Regression
@@ -149,41 +259,206 @@ print(results)
 ## Extended models: RF, GBM, XGBoost, Clustering
 
 ```{r}
-rf_model <- randomForest(Churn ~ ., data = train, ntree = 100)
-rf_pred <- predict(rf_model, newdata = test)
-confusionMatrix(rf_pred, test$Churn)
-varImpPlot(rf_model)
+#rf_model <- randomForest(Churn ~ ., data = train, ntree = 100)
+#rf_pred <- predict(rf_model, newdata = test)
+#confusionMatrix(rf_pred, test$Churn)
+#varImpPlot(rf_model)
+rf_grid <- expand.grid(
+  mtry = c(
+    sqrt(ncol(train) - 1),          # Square root of the number of features
+    log2(ncol(train) - 1),          # Log2 of the number of features
+    (ncol(train) - 1) / 3,          # One-third of the number of features
+    floor(ncol(train) / 2),         # Half of the number of features
+    floor(ncol(train) * 0.8),      # 80% of the number of features
+    ncol(train) - 1                # All features except the target variable
+  )
+)
 
-# Copy train and test sets with numeric target for gbm
+# Train using cross-validation
+rf_control <- trainControl(method = "cv", number = 5)  # 5-fold 
+
+rf_tuned <- train(
+  Churn ~ ., 
+  data = train, 
+  method = "rf", 
+  trControl = rf_control, 
+  tuneGrid = rf_grid,
+  ntree = 100
+)
+
+# Best parameters
+print(rf_tuned$bestTune)
+
+# Make predictions
+rf_pred <- predict(rf_tuned, newdata = test)
+
+# Evaluate performance
+confusionMatrix(rf_pred, test$Churn)
+
+# Feature importance
+print(varImp(rf_tuned))
+print(varImpPlot(rf_tuned$finalModel))
+
+# gbm
+# Prepare the data
 train_gbm <- train %>%
-  mutate(Churn = ifelse(Churn == "Yes", 1, 0))
+  mutate(Churn = factor(ifelse(Churn == "Yes", 1, 0), levels = c(0, 1), labels = c("No", "Yes")))
 
 test_gbm <- test %>%
-  mutate(Churn = ifelse(Churn == "Yes", 1, 0))
+  mutate(Churn = factor(ifelse(Churn == "Yes", 1, 0), levels = c(0, 1), labels = c("No", "Yes")))
 
-# Train GBM
-gbm_model <- gbm(Churn ~ ., data = train_gbm, distribution = "bernoulli",
-                 n.trees = 300, shrinkage = 0.01, interaction.depth = 3, cv.folds = 5)
+# Set up training control
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
 
-best_iter <- gbm.perf(gbm_model, method = "cv")
+# Set up grid for hyperparameter tuning
+gbm_grid <- expand.grid(
+  n.trees = c(100, 200, 300),
+  interaction.depth = c(3, 4, 5),
+  shrinkage = c(0.01, 0.1),
+  n.minobsinnode = 10
+)
 
-# Predict and evaluate
-gbm_pred_prob <- predict(gbm_model, newdata = test_gbm, n.trees = best_iter, type = "response")
-gbm_pred <- ifelse(gbm_pred_prob > 0.5, 1, 0)
-confusionMatrix(as.factor(gbm_pred), as.factor(test_gbm$Churn))
+# Train GBM model using caret
+gbm_model <- train(
+  Churn ~ ., 
+  data = train_gbm, 
+  method = "gbm",
+  trControl = ctrl,
+  tuneGrid = gbm_grid,
+  metric = "ROC",
+  verbose = FALSE
+)
 
+# Print best model
+print(gbm_model$bestTune)
 
+# Predict on test set
+gbm_pred <- predict(gbm_model, newdata = test_gbm)
+gbm_pred_prob <- predict(gbm_model, newdata = test_gbm, type = "prob")
+
+# Evaluate the model
+confusionMatrix(gbm_pred, test_gbm$Churn)
+
+# XGBoost
+# Convert training and testing data into xgb.DMatrix format
 xgb_train <- xgb.DMatrix(data = x_train, label = y_train)
 xgb_test <- xgb.DMatrix(data = x_test, label = y_test)
-xgb_model <- xgboost(data = xgb_train, objective = "binary:logistic", nrounds = 100, verbose = 0)
-xgb_pred_prob <- predict(xgb_model, newdata = xgb_test)
+
+# Define hyperparameter grid
+xgb_grid <- expand.grid(
+  nrounds = c(50, 100, 150),  # Number of boosting rounds
+  eta = c(0.01, 0.1, 0.3),    # Learning rate
+  max_depth = c(3, 6, 9),     # Tree depth
+  gamma = c(0, 1, 5),          # Minimum loss reduction
+  colsample_bytree = c(0.5, 0.7),
+  min_child_weight = c(1, 5),
+  subsample = c(0.6, 0.8, 1)  # Required parameter
+)
+
+# Define training control
+train_control <- trainControl(
+  method = "cv",         # Cross-validation
+  number = 5,            # 5-fold CV
+  verboseIter = FALSE     # Show training progress
+)
+
+# Train the model using caret
+xgb_model <- train(
+  x = as.matrix(x_train), 
+  y = as.factor(y_train), 
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = xgb_grid
+)
+
+print(xgb_model$bestTune)
+
+# Predict on test set
+xgb_pred_prob <- predict(xgb_model, newdata = as.matrix(x_test), type = "prob")[,2]
 xgb_pred <- ifelse(xgb_pred_prob > 0.5, 1, 0)
+
+# Evaluate with confusion matrix
 confusionMatrix(as.factor(xgb_pred), as.factor(y_test))
 
-numeric_scaled <- scale(data_model[, sapply(data_model, is.numeric)])
-fviz_nbclust(numeric_scaled, kmeans, method = "wss")
-km <- kmeans(numeric_scaled, centers = 3)
-fviz_cluster(km, data = numeric_scaled)
+
+
+#numeric_scaled <- scale(data_model[, sapply(data_model, is.numeric)])
+numeric_scaled<-scale(one_hot_matrix)
+k_values <- 2:10  # Change this range as needed
+wss_values <- numeric(length(k_values))  # Store WSS values
+
+# Perform grid search over different k values
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+  km <- kmeans(numeric_scaled, centers = k, nstart = 25)
+  wss_values[i] <- km$tot.withinss  # Store WSS
+}
+
+# Plot the WSS values to determine the best k
+plot(k_values, wss_values, type = "b", pch = 19, frame = FALSE,
+     xlab = "Number of clusters (k)", ylab = "Within-Cluster Sum of Squares (WSS)")
+
+# Choose the best k based on the elbow method (or silhouette analysis)
+optimal_k <- k_values[which.min(diff(diff(wss_values))) + 1]
+cat("Best k (optimal number of clusters):", optimal_k, "\n")
+# Final clustering using optimal_k
+final_km <- kmeans(numeric_scaled, centers = optimal_k, nstart = 25)
+
+# Visualize the final clustering
+fviz_cluster(final_km, data = numeric_scaled)
+```
+
+```{r}
+
+km<-final_km
+
+
+unscaled_centers <- (km$centers * sapply(data.frame(one_hot_matrix), sd,2)) + colMeans(one_hot_matrix) 
+#ggplot(melt(unscaled_centers), aes(x=as.factor(Var1), y=value)) + 
+#  geom_point(stat = "identity") +
+#facet_wrap(~Var2,scale="free") +
+#  ggtitle("Average score by variable, by cluster ")
+#unscaled_centers
+#ggsave('cluster_avgs.jpg', scale=3)
+one_hot_matrix_clustered<-one_hot_matrix
+one_hot_matrix_clustered<-cbind(one_hot_matrix_clustered,km$cluster)
+
+
+#ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(x=value,group=as.factor(V74),fill=as.factor(V74))) + 
+ #   geom_histogram(adjust=1.5,alpha=.5)  + 
+  ##  facet_wrap(~name,scales = "free")+
+  #labs(fill='Cluster')  +
+ # ggtitle("Histogram by variable, by cluster (original values)")
+#ggsave('cluster_histograms.jpg', scale=3)
+
+
+
+ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(y=value,x=as.factor(V74))) + 
+   geom_jitter(size=0.001, alpha=0.2) +
+  aes(color=as.factor(V74)) +
+  facet_wrap(~name,scales = "free")+
+  labs(color='Cluster') +
+  ggtitle("Variables values by cluster (scatter plot)")
+
+  ggsave('cluster_jitter.jpg', scale=3)
+
+```
+
+```{r}
+
+ggplot(pivot_longer(data.frame(one_hot_matrix_clustered),c(1:73)), aes(y=value,x=as.factor(V74))) + 
+   geom_boxplot(weight=0.1,fill=NA) +
+  aes(color=as.factor(V74)) +
+  facet_wrap(~name,scales = "free")+
+  labs(color='Cluster')  +
+  ggtitle("Variables values by cluster (box plot)")
+  ggsave('cluster_boxplot.jpg', scale=3)
+
 ```
 
 ## Model Comparison
@@ -193,7 +468,7 @@ fviz_cluster(km, data = numeric_scaled)
 
 # Convert any needed factors for fairness
 rf_auc <- roc(test$Churn, as.numeric(rf_pred == "Yes"))
-gbm_auc <- roc(test_gbm$Churn, gbm_pred_prob)
+gbm_auc <- roc(as.numeric(test_gbm$Churn), gbm_pred_prob[,1])
 xgb_auc <- roc(y_test, xgb_pred_prob)
 
 results_all <- data.frame(
@@ -218,6 +493,63 @@ print(results_all)
 
 ```
 
+```{r}
+step_pred_prob_train <- predict(step_model, newdata = train, type = "response")
+step_pred_train <- ifelse(step_pred_prob_train > 0.5, "Yes", "No")
+step_roc_train <- roc(y_train, as.vector(step_pred_prob_train))
+lasso_pred_prob_train <- predict(lasso_model, newx = x_train, type = "response")
+lasso_roc_train <- roc(y_train, as.vector(lasso_pred_prob_train))
+lasso_pred_train <- ifelse(lasso_pred_prob_train > 0.5, 1, 0)
+rf_pred_train <- predict(rf_tuned, newdata = train)
+
+
+gbm_pred_train <- predict(gbm_model, newdata = train_gbm)
+gbm_pred_prob_train <- predict(gbm_model, newdata = train_gbm, type = "prob")
+
+xgb_pred_prob_train <- predict(xgb_model, newdata = as.matrix(x_train), type = "prob")[,2]
+xgb_pred_train <- ifelse(xgb_pred_prob_train > 0.5, 1, 0)
+
+rf_auc_train <- roc(train$Churn, as.numeric(rf_pred_train == "Yes"))
+gbm_auc_train <- roc(as.numeric(test_gbm$Churn), gbm_pred_prob[,1])
+xgb_auc_train <- roc(y_train, xgb_pred_train)
+
+results_all_train <- data.frame(
+  Model = c("Stepwise Logistic", "LASSO Logistic", "Random Forest", "GBM", "XGBoost"),
+  Accuracy = c(
+    mean(step_pred_train == train$Churn),
+    mean(lasso_pred_train == y_train),
+    mean((as.numeric(rf_pred_train)-1) == y_train),
+    mean(gbm_pred_train == train_gbm$Churn),
+    mean(xgb_pred_train == y_train)
+  ),
+  AUC = c(
+    auc(step_roc_train),
+    auc(lasso_roc_train),
+    auc(rf_auc_train),
+    auc(gbm_auc_train),
+    auc(xgb_auc_train)
+  )
+)
+
+print(results_all_train)
+```
+
+```{r}
+xg_param<-as.list(xgb_model$bestTune)
+ xg_rounds=xgb_model$bestTune$nrounds
+#  xg_depth=xgb_model$bestTune$max_depth
+#  xg_gamma=xgb_model$bestTune$gamma
+ # xg_eta=xgb_model$bestTune$eta
+  #xg_sample=xgb_model$bestTune$colsample_bytree
+  #xg_weight=xgb_model$bestTune$min_child_weight
+  #xg_sub=xgb_model$bestTune$subsample
+rf_try=rf_tuned$finalModel$tuneValue$mtry
+gbm_ntrees=gbm_model$bestTune$n.trees
+gb_depth=gbm_model$bestTune$interaction.depth
+gbm_shrinkage=gbm_model$bestTune$shrinkage
+gbm_obs=gbm_model$bestTune$n.minobsinnode
+```
+
 # Cross-Validation
 
 ```{r}
@@ -225,7 +557,6 @@ print(results_all)
 set.seed(123)
 B=100
 monte_df<-data.frame()
-
 
 for (b in 1:B){
   if (b %% 20 == 0) {
@@ -274,9 +605,9 @@ for (b in 1:B){
   lasso_pred <- ifelse(lasso_pred_prob > 0.5, 1, 0)
 
   ### Model 3: Random Forest
-  rf_model <- randomForest(Churn ~ ., data = train, ntree = 100) 
-  rf_pred_prob <- predict(rf_model, newdata = test, type = "prob")[, "Yes"] 
-  rf_pred <- predict(rf_model, newdata = test) 
+  rf_model_cv <- randomForest(Churn ~ ., data = train, ntree = 100,mtry=rf_try) 
+  rf_pred_prob <- predict(rf_model_cv, newdata = test, type = "prob")[, "Yes"] 
+  rf_pred <- predict(rf_model_cv, newdata = test) 
   
   ### Model 4: GBM
   train_gbm <- train %>%
@@ -284,18 +615,19 @@ for (b in 1:B){
   test_gbm <- test %>%
     mutate(Churn = ifelse(Churn == "Yes", 1, 0))
 
-  gbm_model <- gbm(Churn ~ ., data = train_gbm, distribution = "bernoulli",
-                 n.trees = best_iter, shrinkage = 0.01, interaction.depth = 3)
+  gbm_model_cv <- gbm(Churn ~ ., data = train_gbm, distribution = "bernoulli",
+                 n.trees = gbm_ntrees, shrinkage = gbm_shrinkage, interaction.depth = gb_depth,n.minobsinnode=gbm_obs)
 
-  gbm_pred_prob <- predict(gbm_model, newdata = test_gbm, n.trees = best_iter, type = "response")
+  gbm_pred_prob <- predict(gbm_model_cv, newdata = test_gbm, n.trees = gbm_ntrees, type = "response")
   gbm_pred <- ifelse(gbm_pred_prob > 0.5, 1, 0)
 
+ 
   
   ### Model 5: XGBoost
   xgb_train <- xgb.DMatrix(data = x_train, label = y_train)
   xgb_test <- xgb.DMatrix(data = x_test, label = y_test)
-  xgb_model <- xgboost(data = xgb_train, objective = "binary:logistic", nrounds = 100, verbose = 0)
-  xgb_pred_prob <- predict(xgb_model, newdata = xgb_test)
+  xgb_model_cv <- xgboost(data = xgb_train, params=xg_param, objective = "binary:logistic", nrounds = xg_rounds, verbose = 0)
+  xgb_pred_prob <- predict(xgb_model_cv, newdata = xgb_test)
   xgb_pred <- ifelse(xgb_pred_prob > 0.5, 1, 0)
 
   ### Metrics
@@ -410,29 +742,125 @@ print(summary_stats)
 
 ```
 
+```{r}
+roc_plot<-ggplot(data=melt(monte_df[,1:5]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+  ggtitle("ROC, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+F1_plot<-ggplot(data=melt(monte_df[,6:10]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+  ggtitle("F1, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+prec_plot<-ggplot(data=melt(monte_df[,11:15]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+  ggtitle("Precision, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+recall_plot<-ggplot(data=melt(monte_df[,16:20]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+ggtitle("Recall, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+acc_plot<-ggplot(data=melt(monte_df[,21:25]),
+aes(x=value, group=variable, fill=variable)) +
+    geom_density(adjust=1.5,alpha=.5) +
+ggtitle("Blanced Accuracy, across 100 Monte Carlo Runs") +
+labs(fill='Model') 
+
+
+
+library(gridExtra)
+monte_density<-arrangeGrob(roc_plot, F1_plot,prec_plot, recall_plot,acc_plot,nrow = 3)
+ggsave("Monte_density.jpg",monte_density,scale=2)
+colMeans(monte_df)
+```
+
 ## Statistical Tests
 
 ```{r}
-#tests for normality
-normality<-c(shapiro.test(monte_df[,1])$p.value,
-shapiro.test(monte_df[,2])$p.value,
-shapiro.test(monte_df[,3])$p.value,
-shapiro.test(monte_df[,4])$p.value,
-shapiro.test(monte_df[,5])$p.value
-)
+ get_p_value <- function(input){
+      as.numeric(unlist(input)[2])
 
-min(normality)
+ }
+ shapiro_tests<-apply(monte_df,2,shapiro.test)
+#tests for normality
+#normality<-c(shapiro.test(monte_df[,1])$p.value,
+normality<-data.frame(lapply(shapiro_tests,get_p_value))
+#Random Forest ROC, LASSO recall fail by a lot, stepwise recalle, random forest recall, and GBM recall are the ones that aren't normal, all but are close
+
+#Random forest 
+
+
+
+normality[normality < .05]
 #All are close to normal, except Random Forest. Could replace with Wilcoxon-Signed Rank
 
-T1_roc=t.test(monte_df[,2],monte_df[,1],paired=T)
-T2_roc=t.test(monte_df[,2],monte_df[,3],paired=T)
-T3_roc=t.test(monte_df[,2],monte_df[,4],paired=T)
-T4_roc=t.test(monte_df[,2],monte_df[,5],paired=T)
-t_scores<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
-comp_names_roc<-c( "Vs LASSO","Vs Random Forest","Vs Naive GBM","Vs XGBoost")
-t_table_roc_df<-data.frame(
-  Model=comp_names_roc,
-  p_value_t_test_roc=t_scores
+T1_roc=t.test(monte_df[,5],monte_df[,1],paired=T)
+T2_roc=t.test(monte_df[,5],monte_df[,2],paired=T)
+T3_roc=t.test(monte_df[,5],monte_df[,3],paired=T)
+T4_roc=t.test(monte_df[,5],monte_df[,4],paired=T)
+t_scores_roc<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
+
+
+T1_balance=t.test(monte_df[,22],monte_df[,21],paired=T)
+T2_balance=t.test(monte_df[,22],monte_df[,23],paired=T)
+T3_balance=t.test(monte_df[,22],monte_df[,24],paired=T)
+T4_balance=t.test(monte_df[,22],monte_df[,25],paired=T)
+T1_precision=t.test(monte_df[,12],monte_df[,11],paired=T)
+T2_precision=t.test(monte_df[,12],monte_df[,13],paired=T)
+T3_precision=t.test(monte_df[,12],monte_df[,14],paired=T)
+T4_precision=t.test(monte_df[,12],monte_df[,15],paired=T)
+t_scores_balance<-c(T1_balance$p.value,T2_balance$p.value,T3_balance$p.value,T4_balance$p.value)
+t_scores_precision<-c(T1_precision$p.value,T2_precision$p.value,T3_precision$p.value,T4_precision$p.value)
+
+T1_F1=t.test(monte_df[,9],monte_df[,6],paired=T)
+T2_F1=t.test(monte_df[,9],monte_df[,7],paired=T)
+T3_F1=t.test(monte_df[,9],monte_df[,8],paired=T)
+T4_F1=t.test(monte_df[,9],monte_df[,10],paired=T)
+t_scores_F1<-c(T1_F1$p.value,T2_F1$p.value,T3_F1$p.value,T4_F1$p.value)
+
+T1_recall=t.test(monte_df[,19],monte_df[,16],paired=T)
+T2_recall=t.test(monte_df[,19],monte_df[,17],paired=T)
+T3_recall=t.test(monte_df[,19],monte_df[,18],paired=T)
+T4_recall=t.test(monte_df[,19],monte_df[,20],paired=T)
+t_scores_recall<-c(T1_recall$p.value,T2_recall$p.value,T3_recall$p.value,T4_recall$p.value)
+#t_scores_step<-c(T1_roc$p.value,T2_roc$p.value,T3_roc$p.value,T4_roc$p.value)
+comp_names_step<-c( "Stepwise = LASSO?","Stepwise = Random Forest?","Stepwise = Naive GBM?"," Stepwise = XGBoost?")
+t_table_stepwise<-data.frame(
+  Hypothesis=comp_names_step,
+  p_value_precision=t_scores_precision,
+  p_value_balanced_accuracy=t_scores_balance
 )
-t_table_df
+comp_names_gbm<-c( "Naive GBM = LASSO?","Naive GBM = Stepwise?","Naive GBM = Random Forest?"," Naive GBM = XGBoost?")
+comp_names_xg<-c( "XGBoost = LASSO?","XGBoost = Stepwise?","XGBoost = Random Forest?" ,"XGBoost = Naive GBM?")
+
+t_table_GBM<-data.frame(
+  Hypothesis=comp_names_gbm,
+  p_value_f1=t_scores_F1,
+  p_value_recall=t_scores_recall
+)
+t_table_xg<-data.frame(
+  Hypothesis=comp_names_xg,
+  p_value_ROC=t_scores_roc
+)
+t_table_stepwise
+t_table_GBM
+print(t_table_xg)
+#Best:
+
+#Recall: Random Forest
+#Precision: Stepwise
+#F1: GBM
+#ROC: Stepwise
+#Balanced Accuracy: Stepwise
+
+
+#Looking at our selected variables:
+#Referrals did not help our model
+#Charge/total charge/LTV did matter
+#Paperless billing, online backup, online securirty did matter
+#Geography did not matter
+#Contract terms did matter
 ```
