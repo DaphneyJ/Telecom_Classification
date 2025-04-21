@@ -452,23 +452,28 @@ print(head(ridge_coeffs, 10))
 print(head(lasso_coeffs, 10))
 
 #### Improved model evaluation using AUC
+library(pROC)
+
+
 predict_and_evaluate <- function(model, type = "response") {
-  probs <- predict(model, newx = X_test, type = type)
-  roc_obj <- roc(y_test, probs)
+  probs <- as.numeric(predict(model, newx = X_test, type = type))
+  y_factor <- factor(as.character(y_test), levels = c("0", "1"))
+  predicted_labels <- factor(ifelse(probs > 0.5, "1", "0"), levels = c("0", "1"))
+  roc_obj <- suppressMessages(roc(response = y_factor, predictor = probs, levels = c("0", "1")))
   list(
     AUC = auc(roc_obj),
-    ConfusionMatrix = confusionMatrix(factor(ifelse(probs > 0.5, 1, 0)), y_test)
+    ConfusionMatrix = confusionMatrix(predicted_labels, y_factor, positive = "1")
   )
 }
 
 ridge_perf <- predict_and_evaluate(ridge_model)
-lasso_perf <- predict_and_evaluate(lasso_model)
+lasso1_perf <- predict_and_evaluate(lasso_model)
 
 cat("Ridge Regression AUC:", ridge_perf$AUC, "\n")
 print(ridge_perf$ConfusionMatrix)
 
-cat("\nLASSO Regression AUC:", lasso_perf$AUC, "\n")
-print(lasso_perf$ConfusionMatrix)
+cat("LASSO Regression AUC:", lasso1_perf$AUC, "\n")
+print(lasso1_perf$ConfusionMatrix)
 
 
 str(churndata)
@@ -485,7 +490,6 @@ logit_model <- glm(Churn ~ ., data = train_data, family = binomial)
 ### Perform stepwise selection using AIC
 stepwise_lr <- stepAIC(logit_model, direction = "both", trace = FALSE)
 summary(stepwise_lr)
-
 
 
 ##### Random Forest
@@ -548,40 +552,13 @@ ggplot(rf_importance[1:15, ], aes(x = reorder(Feature, Importance), y = Importan
 
 #### XGBoost
 
-# Convert categorical variables to dummy variables
-xgb_train <- model.matrix(Churn ~ . -1, data = train_data)
+y_train <- as.numeric(as.factor(y_train)) - 1  # Convert factor levels to 0/1
 
-# Convert target variable to factor 
-y_train <- as.factor(train_data$Churn) 
-# Define hyperparameter grid 
-xgb_grid <- expand.grid(
-  nrounds = c(50, 100, 200),
-  eta = c(0.01, 0.1, 0.3),
-  max_depth = c(3, 6, 9),
-  min_child_weight = c(1, 5, 10),
-  subsample = c(0.5, 0.7, 1.0),
-  colsample_bytree = c(0.5, 0.7, 1.0),
-  gamma = c(0, 0.1, 0.2)  
-)
+xgb_train_matrix <- xgb.DMatrix(data = as.matrix(xgb_train), label = y_train)
 
-# Train the model using caret
-xgb_model <- train(
-  x = xgb_train, 
-  y = y_train, 
-  method = "xgbTree",
-  trControl = trainControl(method = "cv", number = 5),
-  tuneGrid = xgb_grid
-)
-
-# Print best hyperparameters
-print(xgb_model$bestTune)
-
-
-# Train XGBoost model
 set.seed(123)
 xgb_model <- xgboost(
-  data = xgb_train,
-  label = y_train,
+  data = xgb_train_matrix,
   objective = "binary:logistic",
   nrounds = 100,
   max_depth = 6,
@@ -589,9 +566,7 @@ xgb_model <- xgboost(
   verbose = 0
 )
 
-# Get feature importance
-xgb_importance <- xgb.importance(feature_names = colnames(xgb_train), 
-                                 model = xgb_model) %>%
+xgb_importance <- xgb.importance(feature_names = colnames(xgb_train), model = xgb_model) %>%
   as.data.frame() %>%
   rename(Importance = Gain) %>%
   arrange(desc(Importance))
@@ -604,6 +579,8 @@ ggplot(xgb_importance[1:15, ], aes(x = reorder(Feature, Importance), y = Importa
        x = "Features",
        y = "Gain") +
   theme_minimal()
+
+
 
 ###########################
 ### models Key Varibles ###
