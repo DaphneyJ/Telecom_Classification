@@ -551,8 +551,8 @@ ggplot(rf_importance[1:15, ], aes(x = reorder(Feature, Importance), y = Importan
 
 
 #### XGBoost
-
-y_train <- as.numeric(as.factor(y_train)) - 1  # Convert factor levels to 0/1
+xgb_train <- model.matrix(Churn ~ . -1, data = train_data)
+y_train <- as.numeric(as.factor(y_train)) - 1  
 
 xgb_train_matrix <- xgb.DMatrix(data = as.matrix(xgb_train), label = y_train)
 
